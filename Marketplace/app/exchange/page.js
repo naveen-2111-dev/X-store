@@ -10,7 +10,7 @@ import { ConnectButton } from "@rainbow-me/rainbowkit";
 
 export default function Exchange() {
   const { address } = useAccount();
-  const [nftData, setNftData] = useState(null);
+  const [nftData, setNftData] = useState({ listedNFTs: [], ownerNFTs: [] });
   const [loading, setIsLoading] = useState(true);
   const [contract, setContract] = useState(null);
   const [transferLoading, setTransferLoading] = useState(false);
@@ -35,33 +35,48 @@ export default function Exchange() {
       setIsLoading(true);
       try {
         const slugData = await GetSlug(address);
-        if (slugData?.collections?.[0]?.data) {
-          const { ownerNFTs = [], listedNFTs = [] } =
-            slugData.collections[0].data;
+        if (slugData?.collections) {
+          const seenNFTs = new Set();
+          let allListedNFTs = [];
+          let allOwnerNFTs = [];
 
-          const generateRandomPrice = () =>
-            (0.001 + Math.random() * 0.009).toFixed(3);
+          slugData.collections.forEach((collection) => {
+            const { ownerNFTs = [], listedNFTs = [] } = collection.data || {};
 
-          const processedOwnerNFTs = ownerNFTs.map((nft) => ({
-            ...nft,
-            uniqueKey: `owned-${nft.identifier}-${nft.contract_address || ""
-              }-${Math.random().toString(36).substr(2, 9)}`,
-            price: generateRandomPrice(),
-            currency: "ETH",
-          }));
+            listedNFTs.forEach((nft) => {
+              const key = `${nft.contract_address}-${nft.identifier}`;
+              if (!seenNFTs.has(key)) {
+                seenNFTs.add(key);
+                allListedNFTs.push({
+                  ...nft,
+                  uniqueKey: `listed-${nft.order_hash || nft.identifier}-${
+                    nft.contract_address || ""
+                  }-${Math.random().toString(36)}`,
+                  price: nft.price ? ethers.formatEther(nft.price) : null,
+                  currency: nft.currency || "ETH",
+                });
+              }
+            });
 
-          const processedListedNFTs = listedNFTs.map((nft) => ({
-            ...nft,
-            uniqueKey: `listed-${nft.order_hash || nft.identifier}-${nft.contract_address || ""
-              }-${Math.random().toString(36).substr(2, 9)}`,
-            price: nft.price || generateRandomPrice(),
-            currency: nft.currency || "ETH",
-          }));
+            ownerNFTs.forEach((nft) => {
+              const key = `${nft.contract_address}-${nft.identifier}`;
+              if (!seenNFTs.has(key)) {
+                seenNFTs.add(key);
+                allOwnerNFTs.push({
+                  ...nft,
+                  uniqueKey: `owned-${nft.identifier}-${
+                    nft.contract_address || ""
+                  }-${Math.random().toString(36).substr(2, 9)}`,
+                  price: null,
+                  currency: null,
+                });
+              }
+            });
+          });
 
           setNftData({
-            ownerNFTs: processedOwnerNFTs,
-            listedNFTs: processedListedNFTs,
-            collectionName: slugData.collections[0].slug || "My Collection",
+            listedNFTs: allListedNFTs,
+            ownerNFTs: allOwnerNFTs,
           });
         }
       } catch (error) {
@@ -77,8 +92,8 @@ export default function Exchange() {
   }, [address]);
 
   const handleNFTTransfer = async (nft) => {
-    if (!contract || !address) {
-      setError("Contract not initialized or wallet not connected");
+    if (!contract || !address || !nft.price) {
+      setError("Only listed NFTs can be exchanged");
       return;
     }
 
@@ -87,14 +102,9 @@ export default function Exchange() {
 
     try {
       const tokenId = parseInt(nft.identifier);
-      const nftContractAddress = nft.contract;
+      const nftContractAddress = nft.contract_address;
 
       const brtxAmount = nft.price ? nft.price.toString() : "1";
-      console.log("Transferring NFT with:", {
-        contractAddress: nftContractAddress,
-        tokenId: tokenId,
-        price: brtxAmount,
-      });
 
       const tx = await contract.NameTransfer(
         nftContractAddress,
@@ -102,13 +112,43 @@ export default function Exchange() {
         brtxAmount
       );
 
-      console.log("Transaction Sent:", tx);
-
       const slugData = await GetSlug(address);
-      if (slugData?.collections?.[0]?.data) {
+      if (slugData?.collections) {
+        const seenNFTs = new Set();
+        let allListedNFTs = [];
+        let allOwnerNFTs = [];
+
+        slugData.collections.forEach((collection) => {
+          const { ownerNFTs = [], listedNFTs = [] } = collection.data || {};
+
+          listedNFTs.forEach((nft) => {
+            const key = `${nft.contract_address}-${nft.identifier}`;
+            if (!seenNFTs.has(key)) {
+              seenNFTs.add(key);
+              allListedNFTs.push({
+                ...nft,
+                price: nft.price ? ethers.formatEther(nft.price) : null,
+                currency: nft.currency || "ETH",
+              });
+            }
+          });
+
+          ownerNFTs.forEach((nft) => {
+            const key = `${nft.contract_address}-${nft.identifier}`;
+            if (!seenNFTs.has(key)) {
+              seenNFTs.add(key);
+              allOwnerNFTs.push({
+                ...nft,
+                price: null,
+                currency: null,
+              });
+            }
+          });
+        });
+
         setNftData({
-          ...nftData,
-          ownerNFTs: slugData.collections[0].data.ownerNFTs || [],
+          listedNFTs: allListedNFTs,
+          ownerNFTs: allOwnerNFTs,
         });
       }
     } catch (error) {
@@ -121,15 +161,6 @@ export default function Exchange() {
     } finally {
       setTransferLoading(false);
     }
-  };
-
-  const handleNFTClick = (nft) => {
-    console.log("Selected NFT:", {
-      contractAddress: nft.contract,
-      tokenId: nft.identifier,
-      price: nft.price,
-    });
-    handleNFTTransfer(nft);
   };
 
   if (loading) {
@@ -155,15 +186,12 @@ export default function Exchange() {
     );
   }
 
-  if (
-    !nftData ||
-    (nftData.ownerNFTs.length === 0 && nftData.listedNFTs.length === 0)
-  ) {
+  if (nftData.listedNFTs.length === 0 && nftData.ownerNFTs.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center min-h-screen">
         <Gem className="w-12 h-12 text-gray-400" />
         <p className="mt-4 text-xl text-gray-300">
-          No NFTs found in your collection
+          No NFTs found in your wallet
         </p>
       </div>
     );
@@ -172,14 +200,7 @@ export default function Exchange() {
   return (
     <div className="min-h-screen bg-black py-12 px-4 sm:px-6 lg:px-8">
       <div className="max-w-7xl mx-auto">
-        <div className="flex justify-between items-center mb-8">
-          <div>
-            <h1 className="text-4xl font-bold text-white mb-2">
-              {nftData.collectionName}
-            </h1>
-            <p className="text-gray-400">Your exclusive NFT collection</p>
-          </div>
-        </div>
+        <h1 className="text-4xl font-bold text-white mb-8">Your NFTs</h1>
 
         {error && (
           <div className="mb-6 p-4 bg-red-900/50 text-red-200 rounded-lg">
@@ -194,49 +215,49 @@ export default function Exchange() {
           </div>
         )}
 
-        {nftData.ownerNFTs.length > 0 && (
-          <div className="mb-16">
-            <div className="flex items-center mb-6">
-              <Wallet className="w-6 h-6 text-lime-500 mr-2" />
-              <h2 className="text-2xl font-semibold text-white">Owned NFTs</h2>
-              <span className="ml-2 px-2 py-1 bg-gray-700 rounded-full text-sm text-gray-300">
-                {nftData.ownerNFTs.length}
-              </span>
+        <div className="space-y-8">
+          {nftData.listedNFTs.length > 0 && (
+            <div className="bg-gray-900 rounded-xl p-4">
+              <div className="flex items-center mb-4">
+                <ShoppingBag className="w-5 h-5 text-lime-500 mr-2" />
+                <h2 className="text-xl font-medium text-white">
+                  Listed NFTs ({nftData.listedNFTs.length})
+                </h2>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                {nftData.listedNFTs.map((nft) => (
+                  <NFTCard
+                    key={nft.uniqueKey}
+                    nft={nft}
+                    type="listed"
+                    onClick={() => handleNFTTransfer(nft)}
+                  />
+                ))}
+              </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
-              {nftData.ownerNFTs.map((nft) => (
-                <NFTCard
-                  key={nft.uniqueKey}
-                  nft={nft}
-                  type="owned"
-                  onClick={() => handleNFTClick(nft)}
-                />
-              ))}
-            </div>
-          </div>
-        )}
+          )}
 
-        {nftData.listedNFTs.length > 0 && (
-          <div>
-            <div className="flex items-center mb-6">
-              <ShoppingBag className="w-6 h-6 text-lime-500 mr-2" />
-              <h2 className="text-2xl font-semibold text-white">Listed NFTs</h2>
-              <span className="ml-2 px-2 py-1 bg-gray-700 rounded-full text-sm text-gray-300">
-                {nftData.listedNFTs.length}
-              </span>
+          {nftData.ownerNFTs.length > 0 && (
+            <div className="bg-gray-900 rounded-xl p-4">
+              <div className="flex items-center mb-4">
+                <Wallet className="w-5 h-5 text-lime-500 mr-2" />
+                <h2 className="text-xl font-medium text-white">
+                  Owned NFTs ({nftData.ownerNFTs.length})
+                </h2>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+                {nftData.ownerNFTs.map((nft) => (
+                  <NFTCard
+                    key={nft.uniqueKey}
+                    nft={nft}
+                    type="owned"
+                    onClick={() => {}}
+                  />
+                ))}
+              </div>
             </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-6">
-              {nftData.listedNFTs.map((nft) => (
-                <NFTCard
-                  key={nft.uniqueKey}
-                  nft={nft}
-                  type="listed"
-                  onClick={() => handleNFTClick(nft)}
-                />
-              ))}
-            </div>
-          </div>
-        )}
+          )}
+        </div>
       </div>
     </div>
   );
@@ -245,8 +266,12 @@ export default function Exchange() {
 function NFTCard({ nft, type, onClick }) {
   return (
     <div
-      className="group bg-gray-800 rounded-xl overflow-hidden shadow-lg hover:shadow-2xl transition-all duration-300 hover:-translate-y-1 cursor-pointer relative"
-      onClick={onClick}
+      className={`group bg-gray-800 rounded-lg overflow-hidden shadow-lg transition-all duration-300 relative ${
+        type === "listed"
+          ? "hover:shadow-2xl hover:-translate-y-1 cursor-pointer"
+          : "opacity-80 cursor-not-allowed"
+      }`}
+      onClick={type === "listed" ? onClick : undefined}
     >
       <div className="relative pb-[100%] bg-gray-700 overflow-hidden">
         {nft.image_url ? (
@@ -255,7 +280,8 @@ function NFTCard({ nft, type, onClick }) {
             alt={nft.name}
             className="absolute h-full w-full object-cover transition-transform duration-500 group-hover:scale-105"
             onError={(e) => {
-              e.target.src = "https://placehold.co/400x400/1e293b/9ca3af?text=NFT";
+              e.target.src =
+                "https://placehold.co/400x400/1e293b/9ca3af?text=NFT";
             }}
           />
         ) : (
@@ -273,16 +299,22 @@ function NFTCard({ nft, type, onClick }) {
         </p>
         <div className="mt-3 pt-3 border-t border-gray-700 flex justify-between items-center">
           <span
-            className={`text-xs px-2 py-1 rounded-full ${type === "owned"
-                ? "bg-lime-500 text-black-300"
+            className={`text-xs px-2 py-1 rounded-full ${
+              type === "owned"
+                ? "bg-lime-500 text-black"
                 : "bg-blue-900 text-blue-300"
-              }`}
+            }`}
           >
             {type === "owned" ? "OWNED" : "LISTED"}
           </span>
-          <span className="text-white font-medium">
-            {nft.price} {nft.currency || "ETH"}
-          </span>
+          {type === "listed" && nft.price && (
+            <span className="text-white font-medium">
+              {nft.price}
+              {nft.currency === "0x0000000000000000000000000000000000000000"
+                ? "ETH"
+                : "N/A"}
+            </span>
+          )}
         </div>
       </div>
     </div>
